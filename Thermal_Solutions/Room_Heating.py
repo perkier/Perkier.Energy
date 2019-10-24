@@ -8,9 +8,10 @@ def find_path():
     # Return DATA Folder Path
 
     data_path = sys.path[0].split('CODE')[0]
-    data_path = f'{data_path}\\DATA\\'
+    data_path = f'{data_path}\\Fluid_Selection\\Results\\'
 
     return data_path
+
 
 def see_all():
     # Alongate the view on DataFrames
@@ -214,6 +215,8 @@ def amb_temp():
 
 def heat_room(Q_dot, T_amb, i, T_int, Pot):
 
+    ii = i
+
     A_sala, h_sala, V_sala, P_int = room_conditions()
 
     # Caudal Volumico de ar renovado - [m^3 / min]
@@ -228,12 +231,12 @@ def heat_room(Q_dot, T_amb, i, T_int, Pot):
     # Caudal Massico da Sala - [kg^3 / min]
     m_dot_int = V_sala * PropsSI('D','T', T_amb[i] + 273.15,'P',P_int, 'Air') * 60
 
-    Pot[i] = pump(T_int[i-1], Pot[i-1])
+    Pot[ii] = pump(T_int[i-1], Pot[ii-1])
 
-    C_1 = m_dot_int * PropsSI('CPMASS','T', (T_int[i-1]) + 273.15,'P',P_int, 'Air')
+    C_1 = m_dot_int * PropsSI('CPMASS','T', (T_int[ii-1]) + 273.15,'P',P_int, 'Air')
     C_2 = - (A_sala * h_sala + m_dot_renov * cp_renov)
-    C_3 = Pot[i]
-    C_4 = T_int[i-1]
+    C_3 = Pot[ii]
+    C_4 = T_int[ii-1]
     C_5 = T_amb[i]
 
     a = np.array([[(C_2 / C_1), 1, 0],
@@ -244,9 +247,9 @@ def heat_room(Q_dot, T_amb, i, T_int, Pot):
 
     x = np.linalg.solve(a, b)
 
-    T_int[i] = x[2]
+    T_int[ii] = x[2]
 
-    return T_int[i]
+    return T_int, Pot
 
 
 
@@ -290,6 +293,9 @@ def main():
                   'R161','R21','R218','R22','R227EA','R23','R236EA','R236FA', 'R45ca', 'R245fa',
                   'R32', 'R365MFC', 'R40', 'R404A', 'R407C', 'R41', 'R410A', 'R507A', 'RC318']
 
+    # fluid_list = ['R11','R13','R14','R15','R16','R12','R13','Rd(E)','R124yf','R1234ze(E)','R1234ze(Z)']
+
+
     T_amb = amb_temp()
 
     T_room = {}
@@ -311,11 +317,15 @@ def main():
 
     ii = 0
 
+    final_T_df = {}
+
     for fluid in fluid_list:
 
         print(fluid)
 
         try:
+
+            final_T_df[ii] = pd.DataFrame()
 
             for i in range(1, time):
 
@@ -325,13 +335,28 @@ def main():
 
                 P_evap, T_evap = evaporator(m_dot_fluid, T_amb, fluid)
 
-                Q_dot_evap[ii], Q_dot_cond[ii], Q_dot_exp[ii], Q_dot_comp[ii] = heat_states(P_evap, T_evap, P_cond, T_cond, Delta_T_sh, fluid, eta_comp, m_dot_fluid)
+                Q_dot_evap[i], Q_dot_cond[i], Q_dot_exp[i], Q_dot_comp[i] = heat_states(P_evap, T_evap, P_cond, T_cond, Delta_T_sh, fluid, eta_comp, m_dot_fluid)
 
-                heat_room(Q_dot_cond, T_amb, i, T_room, Pot)
+                T_room, Pot = heat_room(Q_dot_cond, T_amb, i, T_room, Pot)
 
-                used_fluid[ii] = fluid
+                used_fluid[i] = fluid
 
-                minutes[ii] = i
+                minutes[i] = i
+
+
+            final_T_df[ii] = pd.DataFrame({'Time': minutes,
+                                        'Fluid': used_fluid,
+                                        'T_room': T_room,
+                                        'T_amb': T_amb,
+                                        'Power': Pot,
+                                        'Q_dot_evap': Q_dot_evap,
+                                        'Q_dot_cond': Q_dot_cond,
+                                        'Q_dot_exp': Q_dot_exp,
+                                        'Q_dot_comp': Q_dot_exp})
+
+            final_T_df[ii].to_csv(f"{find_path()}\\{fluid}.csv", index=False, header=True)
+
+            ii += 1
 
         except:
 
@@ -339,20 +364,21 @@ def main():
 
 
 
-    final_T_df = pd.DataFrame({'Time': minutes,
-                               'Fluid': used_fluid,
-                               'T_room': T_room,
-                               'T_amb': T_amb,
-                               'Power': Pot,
-                               'Q_dot_evap': Q_dot_evap,
-                               'Q_dot_cond': Q_dot_cond,
-                               'Q_dot_exp': Q_dot_exp,
-                               'Q_dot_comp': Q_dot_exp})
+    # final_T_df = pd.DataFrame({'Time': minutes,
+    #                            'Fluid': used_fluid,
+    #                            'T_room': T_room,
+    #                            'T_amb': T_amb,
+    #                            'Power': Pot,
+    #                            'Q_dot_evap': Q_dot_evap,
+    #                            'Q_dot_cond': Q_dot_cond,
+    #                            'Q_dot_exp': Q_dot_exp,
+    #                            'Q_dot_comp': Q_dot_exp})
 
-    print(final_T_df.describe())
-
-    final_T_df.to_csv(f"{find_path()}\\final_T.csv", index=False, header=True)
-
+    print(final_T_df)
+    print(len(final_T_df))
+    print('\n')
+    #
+    # print(final_T_df[2])
     # plot_styling()
     # plot_titles(final_T_df)
 
