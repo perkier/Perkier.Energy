@@ -7,6 +7,9 @@ import numpy as np
 import pylab
 import copy
 
+buying = 0.02
+selling = 0.015
+
 class equipment(object):
 
     def __init__(self):
@@ -41,7 +44,7 @@ class location(object):
 
     def time_range(self):
 
-        self.native_times = pd.date_range(start='2012-01-01', end='2014-02-28', freq='30min')
+        self.native_times = pd.date_range(start='2011-11-22', end='2014-02-28', freq='30min')
 
         return self.native_times
 
@@ -88,6 +91,14 @@ class location(object):
                                           altitude=self.coords['alt'])
 
         return self.solpos, self.cs, self.dni_extra, self.am_abs
+
+
+class electricity_prices(object):
+    
+    def __init__(self):
+        
+        self.buying = 0.02
+        self.selling = 0.015
         
 
 class consumer(object):
@@ -96,9 +107,14 @@ class consumer(object):
 
         self.location = location
 
+        self.start_wallet()
+
+        self.batt_level = 0
+
         self.solar_panel_name = consumer_info_df.loc['Solar_Panel_Module']
         self.solar_panel_num = consumer_info_df.loc['Num_Solar_Panels']
         self.battery_name = consumer_info_df.loc['Battery_Model']
+        self.cons_code = code
 
         self.electrical_consumption(code)
 
@@ -115,9 +131,41 @@ class consumer(object):
 
             eq = equipment()
             batt_prices = eq.battery_data()
+
             self.batt_info = batt_prices.loc[batt_prices['Model'] == self.battery_name].reset_index(drop=True).iloc[0]
 
             self.battery()
+
+        else:
+
+            self.batt_capacity = 0
+
+
+    def start_wallet(self):
+
+        self.wallet = pd.DataFrame({'Date': [],
+                                    'Bought[kW]': [],
+                                    'Bought[€]': [],
+                                    'Sold[kW]': [],
+                                    'Sold[€]': [],
+                                    'Balance[kW]': [],
+                                    'Balance[€]': []})
+
+
+    def transaction_wallet(self, sold, bought, date):
+        
+        balance_kWh = sold - bought
+        balance_money = (sold * selling/ 1000) - (bought * buying / 1000)
+
+        to_append = pd.DataFrame({'Date': [date],
+                                  'Bought[kW]': [bought / 1000],
+                                  'Bought[€]': [bought * buying / 1000],
+                                  'Sold[kW]': [sold / 1000],
+                                  'Sold[€]': [sold * selling/ 1000],
+                                  'Balance[kW]': [balance_kWh],
+                                  'Balance[€]': [balance_money]})
+
+        self.wallet = pd.concat([self.wallet, to_append], ignore_index=True)
 
     
     def solar_panels(self, inverter_name = 'ABB__MICRO_0_25_I_OUTD_US_208_208V__CEC_2014_'):
@@ -184,10 +232,159 @@ class consumer(object):
                                                                         self.module)
 
         dc = pvlib.pvsystem.sapm(effective_irradiance, self.temps['temp_cell'], self.module)
-        self.ac = pvlib.pvsystem.snlinverter(dc['v_mp'], dc['p_mp'], self.inverter)
+        self.ac = pvlib.pvsystem.snlinverter(dc['v_mp'], dc['p_mp'], self.inverter).fillna(0).clip(lower=0)
+        self.ac = self.ac * self.solar_panel_num
 
         # self.annual_energy = self.ac.sum() / 20
         # energies[name] = annual_energy
+
+
+    # def energy_bank(self):
+    # 
+    #     print(self.ac.head())
+    #     print(self.consum_df.head())
+    #     print(self.batt_capacity)
+
+
+
+
+class energy_bank(object):
+
+    def __init__(self, consumers):
+
+        self.consumers = consumers
+
+        self.time_loop()
+
+
+    def sell_energy(self, balance, consumer):
+
+        sold = balance
+        bought = 0
+
+        # print(time, produced, consumed, consumer.cons_code, balance, consumer.batt_level,
+        #       'Sell Energy to the Grid')
+
+        return sold, bought
+
+    def buy_energy(self, balance, consumer):
+
+        sold = 0
+        bought = abs(balance)
+
+        # print(time, produced, consumed, consumer.cons_code, balance, consumer.batt_level,
+        #       'Buy Energy from the Grid')
+
+        return sold, bought
+
+
+    def store_energy(self, balance, consumer):
+
+        consumer.batt_level += balance
+
+        sold = 0
+        bought = 0
+
+        if consumer.batt_level > consumer.batt_capacity:
+
+            extra = consumer.batt_level - consumer.batt_capacity
+            consumer.batt_level = consumer.batt_capacity
+
+            sold, bought = self.sell_energy(self, extra, consumer)
+
+        # print(time, produced, consumed, consumer.cons_code, balance, consumer.batt_level,
+        #       'Give energy to the battery')
+
+        return sold, bought
+
+
+    def use_batt(self, balance, consumer):
+
+        consumer.batt_level += balance
+
+        sold = 0
+        bought = 0
+
+        if consumer.batt_level < 0:
+
+            extra = abs(consumer.batt_level)
+            consumer.batt_level = 0
+
+            sold, bought = self.buy_energy(extra, consumer)
+
+        # print(time, produced, consumed, consumer.cons_code, balance, consumer.batt_level,
+        #       'Take energy From battery')
+
+        return sold, bought
+
+
+    def banking(self, produced, consumed, consumer, date):
+
+        balance = produced - consumed
+
+        # print(consumer.batt_level)
+
+        if balance >= 0:
+
+            if consumer.batt_capacity <= (consumer.batt_level + balance):
+
+                sold, bought = self.sell_energy(balance, consumer)
+
+            else:
+
+                sold, bought = self.store_energy(balance, consumer)
+
+
+        if balance < 0:
+
+            if consumer.batt_level > 0:
+
+                sold, bought = self.use_batt(balance, consumer)
+
+            else:
+
+                sold, bought = self.buy_energy(balance, consumer)
+
+        # print(batt_level)
+        # print(batt_capacity)
+
+        consumer.transaction_wallet(sold, bought, date)
+
+        # quit()
+
+
+    def time_loop(self):
+
+        time_line = self.consumers[0].consum_df.loc[:,'tstp']
+
+        for time in time_line:
+
+            for consumer in self.consumers:
+
+                ac_df = consumer.ac
+                consum_df = consumer.consum_df
+
+                try:
+                    produced = ac_df[time]
+
+                except:
+                    produced = 0
+
+                try:
+                    consumed = float(consum_df.loc[consum_df['tstp'] == time].reset_index(drop=True).iloc[0].loc['energy(kWh/hh)']) * 1000
+
+                except:
+                    consumed = 0
+
+                self.banking(produced, consumed, consumer, time)
+
+
+
+        # quit()
+        # 
+        # print(time_line)
+        # quit()
+
 
 
 def main():
